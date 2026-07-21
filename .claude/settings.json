@@ -2,8 +2,15 @@
   "skills": {
     "turbocontext": {
       "name": "turbocontext",
-      "source": "../skill/turbocontext.md",
-      "description": "TurboContext: Adaptive AI context optimization & quality-weighted generation algorithm"
+      "source": "skill/turbocontext.md",
+      "description": "TurboContext: Cross-session context memory for Claude Code"
+    }
+  },
+  "mcpServers": {
+    "turbocontext": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp-server.ts"],
+      "env": {}
     }
   }
 }

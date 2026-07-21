@@ -8,7 +8,7 @@
 //   每个 sᵢ → role + task + context + format + quality
 // ============================================================
 
-import type { Task, PromptComponent, CompressedContext, CapabilityRequirement, StrategyMutation } from "../types.js";
+import type { Task, PromptComponent, CompressedContext, CapabilityRequirement } from "../types.js";
 
 /** 完整的提示架构 */
 export interface PromptArchitecture {
@@ -30,24 +30,19 @@ export interface PromptRound {
 
 /**
  * 主入口：构建提示架构
- *
- * @param canonicalMutations - 已保留的变异栈（autoresearch: branch tip = best config）
- * @param trialMutation - 正在试验的变异
  */
 export function composePromptArchitecture(
   task: Task,
   context: CompressedContext,
-  requirements: CapabilityRequirement[],
-  trialMutation?: StrategyMutation,
-  canonicalMutations?: StrategyMutation[],
+  requirements?: CapabilityRequirement[],
 ): PromptArchitecture {
-  // Step 1: 将任务分解为有序子任务（先应用 canonical 策略，再应用 trial 变异）
-  const subTasks = decomposeTask(task, context, trialMutation, canonicalMutations);
+  const reqs = requirements ?? [];
+  const subTasks = decomposeTask(task, context);
 
   // Step 2: 为每个子任务构建提示轮次
   const rounds: PromptRound[] = subTasks.map((st, i) => {
     const systemPrompt = buildSystemPrompt(st, task);
-    const userPrompt = buildUserPrompt(st, context, requirements);
+    const userPrompt = buildUserPrompt(st, context, reqs);
 
     return {
       sequence: i + 1,
@@ -96,11 +91,9 @@ interface SubTask {
 function decomposeTask(
   task: Task,
   context: CompressedContext,
-  trialMutation?: StrategyMutation,
-  canonicalMutations?: StrategyMutation[],
 ): SubTask[] {
   const type = task.type;
-  const hasCode = context.compressionRatio < 0.9; // 有实质代码内容
+  const hasCode = context.compressionRatio < 0.9;
 
   const decompositionStrategies: Record<string, () => SubTask[]> = {
     code_review: () => [
@@ -268,140 +261,7 @@ function decomposeTask(
 
   // 选择策略，如果不存在则回退到 general
   const strategy = decompositionStrategies[type] || decompositionStrategies.general;
-  let base = strategy();
-
-  // 应用 canonical 策略栈（已保留的变异，按顺序累积；autoresearch: branch tip = best config）
-  if (canonicalMutations && canonicalMutations.length > 0) {
-    for (const canonicalMutation of canonicalMutations) {
-      base = applyMutation(base, canonicalMutation);
-    }
-  }
-
-  // 应用正在试验的变异（v2.3 — autoresearch-inspired self-evolution）
-  if (trialMutation) {
-    base = applyMutation(base, trialMutation);
-  }
-
-  return base;
-}
-
-/**
- * 将变异操作应用到基础分解上（自进化 v2.3）
- */
-function applyMutation(base: SubTask[], mutation: StrategyMutation): SubTask[] {
-  switch (mutation.type) {
-    case "merge_rounds": {
-      const [i, j] = mutation.roundIndices;
-      if (i >= base.length || j >= base.length || i === j) return base;
-      const [a, b] = [Math.min(i, j), Math.max(i, j)];
-      const merged: SubTask = {
-        goal: mutation.newGoal || `${base[a].goal} 且 ${base[b].goal}`,
-        contextFocus: [...new Set([...base[a].contextFocus, ...base[b].contextFocus])],
-        outputFormat: `${base[a].outputFormat}; ${base[b].outputFormat}`,
-        qualityCriteria: [...base[a].qualityCriteria, ...base[b].qualityCriteria],
-        dependsOn: base[a].dependsOn.filter(d => d !== a && d !== b),
-        requiresPreviousOutput: base[a].requiresPreviousOutput || base[b].requiresPreviousOutput,
-      };
-      const result = [...base];
-      result.splice(a, b - a + 1, merged);
-      // oldIdx<a→oldIdx; a≤oldIdx≤b→a(merged); oldIdx>b→oldIdx-(b-a)
-      const mapIdx = (oldIdx: number) =>
-        oldIdx < a ? oldIdx : oldIdx <= b ? a : oldIdx - (b - a);
-      return fixDependsOn(result, mapIdx);
-    }
-    case "remove_round": {
-      const idx = mutation.roundIndex;
-      if (idx < 0 || idx >= base.length) return base;
-      const result = [...base];
-      result.splice(idx, 1);
-      const mapIdx = (oldIdx: number) =>
-        oldIdx < idx ? oldIdx : oldIdx > idx ? oldIdx - 1 : undefined;
-      return fixDependsOn(result, mapIdx);
-    }
-    case "reorder_rounds": {
-      if (mutation.newOrder.length !== base.length) return base;
-      const result = mutation.newOrder.map(i => base[i]);
-      const mapIdx = (oldIdx: number) => {
-        const newIdx = mutation.newOrder.indexOf(oldIdx);
-        return newIdx >= 0 ? newIdx : undefined;
-      };
-      return fixDependsOn(result, mapIdx);
-    }
-    case "split_round": {
-      const idx = mutation.roundIndex;
-      if (idx < 0 || idx >= base.length) return base;
-      const original = base[idx];
-      const half = Math.ceil(original.qualityCriteria.length / 2);
-      const a: SubTask = {
-        goal: mutation.newGoalA || original.goal,
-        contextFocus: [...original.contextFocus],
-        outputFormat: original.outputFormat,
-        qualityCriteria: original.qualityCriteria.slice(0, half),
-        dependsOn: original.dependsOn,
-        requiresPreviousOutput: original.requiresPreviousOutput,
-      };
-      const b: SubTask = {
-        goal: mutation.newGoalB || `${original.goal}（验证）`,
-        contextFocus: [...original.contextFocus],
-        outputFormat: original.outputFormat,
-        qualityCriteria: original.qualityCriteria.slice(half),
-        dependsOn: [idx], // 依赖于拆分后的前半部分
-        requiresPreviousOutput: true,
-      };
-      const result = [...base];
-      result.splice(idx, 1, a, b);
-      // oldIdx<idx→oldIdx; oldIdx==idx→idx(a); oldIdx>idx→oldIdx+1
-      const mapIdx = (oldIdx: number) =>
-        oldIdx < idx ? oldIdx : oldIdx === idx ? idx : oldIdx + 1;
-      return fixDependsOn(result, mapIdx);
-    }
-    case "add_quality_criterion": {
-      const idx = mutation.roundIndex;
-      if (idx < 0 || idx >= base.length) return base;
-      const result = [...base];
-      result[idx] = {
-        ...result[idx],
-        qualityCriteria: [...result[idx].qualityCriteria, mutation.criterion],
-      };
-      return result;
-    }
-    case "remove_quality_criterion": {
-      const idx = mutation.roundIndex;
-      if (idx < 0 || idx >= base.length) return base;
-      const ci = mutation.criterionIndex;
-      if (ci < 0 || ci >= base[idx].qualityCriteria.length) return base;
-      const result = [...base];
-      result[idx] = {
-        ...result[idx],
-        qualityCriteria: result[idx].qualityCriteria.filter((_, i) => i !== ci),
-      };
-      return result;
-    }
-    default:
-      return base;
-  }
-}
-
-/**
- * 修正变异后的 dependsOn 索引。
- *
- * 仅过滤掉无效旧索引不够——删除/合并轮次后索引会移位。
- * 接受一个映射函数将旧依赖索引转换为新索引。
- */
-function fixDependsOn(
-  subTasks: SubTask[],
-  mapIndex?: (oldIdx: number) => number | undefined,
-): SubTask[] {
-  return subTasks.map((st, newIdx) => {
-    const remapped = st.dependsOn
-      .map(oldIdx => (mapIndex ? mapIndex(oldIdx) : oldIdx))
-      .filter((d): d is number =>
-        d !== undefined && d >= 0 && d < subTasks.length && d < newIdx,
-      );
-    // 去重（当两个旧索引映射到同一新索引时可能出现）
-    const unique = [...new Set(remapped)];
-    return { ...st, dependsOn: unique };
-  });
+  return strategy();
 }
 
 /**

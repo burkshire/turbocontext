@@ -6,6 +6,41 @@
 
 ---
 
+## 快速开始
+
+### 环境要求
+
+- **Node.js** ≥ 20
+- **npm**（随 Node.js 一起安装）
+- **API Key**：DeepSeek API Key（或任意 OpenAI 兼容接口的 Key）
+
+### 安装
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/burkshire/turbocontext.git
+cd turbocontext
+
+# 2. 安装依赖
+npm install
+
+# 3. （可选）配置 API Key，不配置则使用模拟模式
+export DEEPSEEK_API_KEY="sk-你的key"
+
+# 4. 跑一遍 demo，看看效果
+npx tsx src/cli.ts demo
+```
+
+### 三句话理解 TurboContext
+
+```
+1. 压缩上下文 — 不让无关代码稀释 LLM 的注意力
+2. 质量门控   — 输出不达标就自动反馈重试，最多 3 轮
+3. 持续学习   — 每次执行都在优化参数，越用越聪明
+```
+
+---
+
 ## 阅读路线
 
 本仓库包含两套互补的文档：
@@ -14,9 +49,9 @@
 - **LEARN.md**（配套教程）— 从零开始理解设计思想的七堂课
 
 建议顺序：
-1. 先看 [LEARN.md](./LEARN.md) 前三课，理解算法的设计直觉
-2. 回到 README.md 看对应的公式部分，把直觉和公式对应起来
-3. 运行 `npx tsx src/cli.ts demo`，看实际输出
+1. 先跑 demo：`npx tsx src/cli.ts demo`
+2. 看 [LEARN.md](./LEARN.md) 前三课，理解算法的设计直觉
+3. 回到 README.md 看对应的公式部分，把直觉和公式对应起来
 4. 继续 LEARN.md 后四课，理解质量门控、成本优化和学习系统
 5. 打开源码，一行行对照 README.md 的架构说明
 6. 在你自己的项目中注册 `/turbocontext` Skill，开始使用
@@ -25,6 +60,7 @@
 
 ## 目录
 
+- [快速开始](#快速开始)
 - [1. 核心思想](#1-核心思想)
 - [2. 算法全景](#2-算法全景)
 - [3. 完整数学公式](#3-完整数学公式)
@@ -717,14 +753,63 @@ class Learner {
 
 ## 5. 使用方式
 
-### 5.1 方式 A：Claude Code Skill
+### 5.1 方式 A：终端 CLI（零依赖，任何项目都能用）
 
-**安装**：
-项目已包含 `.claude/settings.json` 和 `skill/turbocontext.md`。
-在 Claude Code 中直接使用：
+```bash
+cd turbocontext                     # 进入 clone 下来的目录
+
+# 查看所有命令
+npx tsx src/cli.ts help
+
+# 运行演示（不调用 LLM，模拟数据展示完整流程）
+npx tsx src/cli.ts demo
+
+# 查看公式参考
+npx tsx src/cli.ts formula
+
+# 审查代码（模拟模式，不消耗 API）
+npx tsx src/cli.ts run \
+  --task "审查 src/core/compressor.ts 的代码质量" \
+  --dir ./src \
+  --type code_review
+
+# 调用真实 LLM（需先配置 API Key）
+export DEEPSEEK_API_KEY="sk-你的key"
+npx tsx src/cli.ts run \
+  --task "审查 src/core/compressor.ts 的代码质量" \
+  --dir ./src \
+  --type code_review \
+  --llm
+
+# 支持的任务类型
+# code_review | code_generation | debugging | code_refactor
+# analysis | design | documentation | testing | general
+```
+
+### 5.2 方式 B：Claude Code Skill（在 Claude Code 中使用 /turbocontext）
+
+**第一步 — 注册 Skill**：把以下内容添加到你的 Claude Code 项目的 `.claude/settings.json` 中（如果文件不存在就新建）：
+
+```json
+{
+  "skills": {
+    "turbocontext": {
+      "name": "turbocontext",
+      "source": "skill/turbocontext.md",
+      "description": "TurboContext: Adaptive context optimization & quality-weighted generation"
+    }
+  }
+}
+```
+
+> **注意**：`source` 要指向你 clone 的 turbocontext 仓库里的 `skill/turbocontext.md`。写绝对路径最稳妥，比如 `/home/你的用户名/turbocontext/skill/turbocontext.md`。
+
+**第二步 — 使用**：在 Claude Code 中直接输入：
 
 ```
 /turbocontext 审查当前项目的 src/auth 模块，关注安全隐患
+/turbocontext 帮我重构 src/utils.ts，消除重复代码
+/turbocontext 分析这个项目的架构设计，给出改进建议
 ```
 
 **Skill 会自动执行**：
@@ -734,25 +819,26 @@ class Learner {
 4. 质量门控的多轮生成
 5. 输出完整的质量报告
 
-### 5.2 方式 B：终端 CLI
+### 5.3 方式 C：作为 npm 库集成到你的代码
 
 ```bash
-# 查看帮助
-cd /Users/fk/turbocontext
-npx tsx src/cli.ts help
+# 在你的项目中安装（本地路径）
+npm install /path/to/turbocontext
+```
 
-# 运行演示
-npx tsx src/cli.ts demo
+```typescript
+import { TurboContextEngine, compressContext, evaluateQuality } from "turbocontext";
 
-# 查看公式
-npx tsx src/cli.ts formula
+// 使用完整引擎
+const engine = new TurboContextEngine({
+  qualityThreshold: 0.85,     // 质量阈值
+  maxAttempts: 3,             // 最大重试次数
+});
+const result = await engine.execute(myTask, myFragments);
 
-# 运行算法
-npx tsx src/cli.ts run \
-  --task "审查 src/auth 模块的代码安全" \
-  --dir ./src \
-  --type code_review \
-  --threshold 0.85
+// 或单独使用某个阶段
+const compressed = compressContext(task, fragments, config);
+const quality = evaluateQuality(output, task);
 ```
 
 ### 5.3 方式 C：作为库集成

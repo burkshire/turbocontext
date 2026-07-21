@@ -13,6 +13,7 @@
 // ============================================================
 
 import type { Task, ModelTier, ModelConfig, ExecutionRecord } from "../types.js";
+import { createHash } from "node:crypto";
 
 export const MODEL_TIERS: Record<ModelTier, ModelConfig> = {
   fast: {
@@ -89,7 +90,7 @@ export class Optimizer {
   selectModel(
     task: Task,
     executionHistory: ExecutionRecord[],
-    opts?: { qualityProxy?: import("./quality-proxy.js").QualityProxy },
+    opts?: Record<string, unknown>,
   ): { tier: ModelTier; config: ModelConfig; rationale: string } {
     const complexity = this.estimateComplexity(task, executionHistory);
 
@@ -106,18 +107,6 @@ export class Optimizer {
     } else {
       tier = "deep";
       rationale = `复杂度 ${complexity.toFixed(2)} ≥ ${this.config.thresholdHigh}，使用深度模型`;
-    }
-
-    // v6: Quality Proxy — if proxy predicts high quality even with fast model, downgrade to save cost
-    if (opts?.qualityProxy && opts.qualityProxy.getCalibrationSize() >= 5 && tier !== "fast") {
-      try {
-        const proxyPred = opts.qualityProxy.predict(task.description, task.type);
-        if (proxyPred >= 0.80) {
-          const downgradedTier: ModelTier = tier === "deep" ? "medium" : "fast";
-          tier = downgradedTier;
-          rationale += ` | v6 proxy predicts ${(proxyPred * 100).toFixed(0)}% quality → downgraded to ${downgradedTier}`;
-        }
-      } catch { /* proxy prediction failed, ignore */ }
     }
 
     // 延迟预算约束
@@ -246,7 +235,6 @@ export class Optimizer {
    * 计算任务指纹（使用 SHA-256 避免缓存碰撞）
    */
   private computeFingerprint(task: Task, compressedContent: string): string {
-    const { createHash } = require("crypto");
     const input = `${task.type}:${task.description}:${compressedContent.slice(0, 200)}`;
     return `${task.type}_${createHash("sha256").update(input).digest("hex").slice(0, 16)}`;
   }

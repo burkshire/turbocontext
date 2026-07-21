@@ -12,13 +12,13 @@
 //     否则生成 feedback，注入到下一轮 prompt
 // ============================================================
 
-import type { Task, GenerationOutput, QualityDimensions, QualityAssessment, QualityIssue, UnifiedMetric } from "../types.js";
+import type { Task, GenerationOutput, QualityDimensions, QualityAssessment, QualityIssue } from "../types.js";
 import type { PromptArchitecture } from "./composer.js";
 import { selectVerifier, blendedQuality, type Verifier, type VerificationResult } from "./verifier.js";
-import { QualityProxy } from "./quality-proxy.js";
+// QualityProxy removed (Plan B: no RL infrastructure)
 
 // Re-export for consumers
-export { QualityProxy } from "./quality-proxy.js";
+// QualityProxy re-export removed (Plan B)
 
 /** 默认质量阈值配置 */
 export const DEFAULT_QUALITY_CONFIG = {
@@ -45,7 +45,6 @@ export async function* qualityWeightedGeneration(
   config: Partial<typeof DEFAULT_QUALITY_CONFIG> & {
     workingDir?: string;
     sourceFiles?: string[];
-    qualityProxy?: import("./quality-proxy.js").QualityProxy;
   } = {},
   llmCall: (prompt: string, temp: number) => Promise<string> = defaultLLMCall,
 ): AsyncGenerator<GenerationOutput, GenerationOutput, unknown> {
@@ -57,63 +56,12 @@ export async function* qualityWeightedGeneration(
     const temperature = cfg.temperatureSchedule[tempIndex] ?? 0.1;
     const startTime = Date.now();
 
-    // v6: Quality Proxy pre-check — predict BEFORE LLM call to skip if hopeless
-    const preCheckProxy = (cfg as Record<string, unknown>).qualityProxy as QualityProxy | undefined;
-    if (preCheckProxy && preCheckProxy.getCalibrationSize() >= 5 && attempt >= 2) {
-      try {
-        const preCheckPred = preCheckProxy.predict(
-          "", // no content yet — structural prediction only
-          task.description,
-          task.type,
-          undefined,
-          attempt,
-        );
-        if (preCheckPred.predictedQuality < cfg.qualityThreshold * 0.7) {
-          console.log(
-            `[TurboContext v6] Proxy pre-check: predicted ${(preCheckPred.predictedQuality * 100).toFixed(0)}% ` +
-            `< threshold ${(cfg.qualityThreshold * 70).toFixed(0)}% — injecting feedback, skipping LLM call`
-          );
-          // Inject feedback as if we got a low-quality result
-          const fakeAssessment = evaluateQuality("", task, 0);
-          fakeAssessment.score = preCheckPred.predictedQuality;
-          const feedback = generateFeedback(fakeAssessment, currentPrompt);
-          currentPrompt = injectFeedback(currentPrompt, feedback);
-          // log as a skipped attempt (no token cost)
-          yield {
-            attempt, content: "[v6 proxy skip]", qualityScore: preCheckPred.predictedQuality,
-            dimensionScores: fakeAssessment.dimensions, latencyMs: 1,
-            attemptAttempted: attempt, attemptsAttempted: cfg.maxAttempts,
-            feedbackInjected: true,
-          } as GenerationOutput;
-          continue;
-        }
-      } catch { /* pre-check failure is non-fatal */ }
-    }
-
     // 生成
     const content = await llmCall(currentPrompt, temperature);
     const latencyMs = Date.now() - startTime;
 
     // 质量评估（使用分支特定阈值如果已配置）
     const assessment = evaluateQuality(content, task, cfg.qualityThreshold);
-
-    // v6: Quality Proxy (PACE-inspired) — learned quality prediction from cheap signals
-    const qualityProxy = (cfg as Record<string, unknown>).qualityProxy as QualityProxy | undefined;
-    let proxyPrediction: number | null = null;
-    if (qualityProxy && qualityProxy.getCalibrationSize() >= 8) {
-      try {
-        const prediction = qualityProxy.predict(
-          content,
-          task.description,
-          task.type,
-          undefined, // executionMetrics not available during generation
-          attempt + 1,
-        );
-        proxyPrediction = prediction.predictedQuality;
-      } catch (_err) {
-        // Proxy failure is non-fatal
-      }
-    }
 
     // v3.4/v3.5: Run verifier for hard signal (Karpathy approach)
     let verifierResult: VerificationResult | null = null;
@@ -157,12 +105,6 @@ export async function* qualityWeightedGeneration(
         : assessment.score;
     }
 
-    // v6: Blend Quality Proxy prediction into effective score
-    // Proxy weight grows with calibration data size (max 0.4 blend with regex+verifier)
-    if (proxyPrediction !== null) {
-      const proxyWeight = Math.min(0.4, qualityProxy!.getCalibrationSize() / 50);
-      effectiveScore = effectiveScore * (1 - proxyWeight) + proxyPrediction * proxyWeight;
-    }
     const effectivePassed = effectiveScore >= cfg.qualityThreshold;
 
     const output: GenerationOutput = {
@@ -854,57 +796,5 @@ const METRIC_EPSILON = 0.0001; // 避免除以零
  * 使所有实验在同一尺度上直接可比。
  * 越高越好：高质量、低成本 = 高效率。
  */
-export function computeUnifiedMetric(
-  qualityScore: number,
-  totalCost: number,
-  latencyMs: number,
-  attempts: number,
-  opts?: { alpha?: number; simplicityMultiplier?: number },
-): UnifiedMetric {
-  const alpha = opts?.alpha ?? 1.0;
-  const simplicityMult = opts?.simplicityMultiplier ?? 1.0;
-  // efficiency = quality / (cost + latency_penalty), scaled by alpha and simplicity
-  const latencyPenalty = latencyMs / 1000 * 0.0001; // ~$0.0001 per second of latency
-  const rawEfficiency = (qualityScore * alpha * simplicityMult) / (totalCost + latencyPenalty + METRIC_EPSILON);
-  return {
-    efficiency: Math.round(rawEfficiency * 100) / 100,
-    quality: Math.round(qualityScore * 10000) / 10000,
-    cost: Math.round(totalCost * 10000) / 10000,
-    latencyMs,
-    attempts,
-    alpha,
-    simplicityMultiplier: Math.round(simplicityMult * 1000) / 1000,
-  };
-}
-
-/**
- * computeSimplicity: estimates the simplicity of a mutation.
- * Fewer changed parameters + smaller magnitude → higher simplicity.
- * Returns [0, 1] where 1 = simplest (e.g., deleting code, reducing rounds).
- */
-export function computeSimplicity(mutation: import("../types.js").StrategyMutation | null | undefined): number {
-  if (!mutation) return 1.0; // baseline = simplest
-  switch (mutation.type) {
-    case "remove_round":
-    case "remove_quality_criterion":
-      return 0.95; // removing = simplest
-    case "merge_rounds":
-      return 0.80;
-    case "reorder_rounds":
-      return 0.85;
-    case "mutate_retrieval":
-    case "mutate_temperature":
-      return 0.70;
-    case "mutate_compression_weights":
-      return 0.60;
-    case "mutate_quality_weights":
-      return 0.55;
-    case "mutate_model_tiers":
-      return 0.50;
-    case "split_round":
-    case "add_quality_criterion":
-      return 0.40; // adding = more complex
-    default:
-      return 0.65;
-  }
-}
+// computeUnifiedMetric removed (Plan B: no experiment loop)
+// computeSimplicity removed (Plan B: no mutation system)

@@ -10,12 +10,8 @@
 
 import type {
   Task, ContextFragment, CompressedContext, CompressedFragment,
-  CapabilityRequirement, TurboContextConfig, IDFCache, RetrievalWeights,
+  CapabilityRequirement, TurboContextConfig, IDFCache,
 } from "../types.js";
-import { DEFAULT_RETRIEVAL_WEIGHTS } from "../types.js";
-import type { EmbeddingProvider } from "./embeddings.js";
-import { cosineSimilarity, normalizeSimilarity } from "./embeddings.js";
-import { entropyMMRBonus } from "./retrieval-system.js";
 
 /** 默认配置 */
 export const DEFAULT_COMPRESSOR_CONFIG = {
@@ -313,43 +309,13 @@ export async function compressContext(
     sourceBoostFn?: (source: string) => number;
     idfCache?: IDFCache;
     adaptiveMmrLambda?: number;
-    retrievalWeights?: RetrievalWeights;
-    embeddingProvider?: EmbeddingProvider;
-    /** v3.7: causal utility multiplier for Phase 2 re-ranking */
-    causalBoostFn?: (fragment: ContextFragment, task: Task) => number;
   } = {}
 ): Promise<CompressedContext> {
   const cfg = { ...DEFAULT_COMPRESSOR_CONFIG, ...config };
   const sourceBoostFn = "sourceBoostFn" in config ? config.sourceBoostFn : undefined;
-  const causalBoostFn = "causalBoostFn" in config ? config.causalBoostFn : undefined;
   const idfCache = config.idfCache || buildIDFCache(fragments);
   const mmrLambda = config.adaptiveMmrLambda ?? 0.65;
-  const rw = config.retrievalWeights || DEFAULT_RETRIEVAL_WEIGHTS;
   const originalTokens = estimateTokens(fragments);
-
-  // v3.2: Pre-compute embedding scores if provider is available.
-  // This replaces IDF-based semantic similarity with cosine similarity
-  // in embedding space, while keeping all other scoring dimensions.
-  let embeddingScores: Map<string, number> | undefined;
-  if (config.embeddingProvider && fragments.length > 0) {
-    try {
-      const queryEmb = await config.embeddingProvider.embedQuery(task.description);
-      const fragmentEmbs = await config.embeddingProvider.embed(
-        fragments.map(f => f.content)
-      );
-      embeddingScores = new Map();
-      for (let i = 0; i < fragments.length; i++) {
-        const raw = cosineSimilarity(queryEmb, fragmentEmbs[i]);
-        embeddingScores.set(fragments[i].id, normalizeSimilarity(raw));
-      }
-    } catch (err) {
-      // Embedding failed — log and fall back to IDF silently
-      console.warn(
-        `[TurboContext] Embedding provider failed, falling back to IDF: ${(err as Error).message}`
-      );
-      embeddingScores = undefined;
-    }
-  }
 
   // Step 1: 分解任务为能力需求
   const requirements = decomposeTask(task);
@@ -364,16 +330,12 @@ export async function compressContext(
 
   const scored = fragments.map((f, idx) => {
     const recencyPos = sortedByTime.indexOf(f);
-    const embScore = embeddingScores?.get(f.id);
     const score = calculateScoreV2(f, task, cfg, {
       queryVector,
       idfCache,
       recencyPosition: recencyPos >= 0 ? recencyPos : idx,
       totalFragments: fragments.length,
       sourceBoostFn,
-      retrievalWeights: rw,
-      embeddingScore: embScore,
-      causalBoostFn,
     });
     return { fragment: f, score, features: extractFragmentFeatures(f, task) };
   });
@@ -534,12 +496,13 @@ interface ScoreContext {
   recencyPosition: number;
   totalFragments: number;
   sourceBoostFn?: (source: string) => number;
-  retrievalWeights: RetrievalWeights;
-  /** v3.2: pre-computed embedding similarity [0-1], overrides IDF when set */
-  embeddingScore?: number;
-  /** v3.7: causal utility multiplier [0.5, 1.5], applied after normalization */
-  causalBoostFn?: (fragment: ContextFragment, task: Task) => number;
 }
+
+// Hardcoded default scoring weights (replaces RetrievalWeights RL system)
+const DEFAULT_SCORE_WEIGHTS = {
+  semantic: 0.40, taskOverlap: 0.10, branchMatch: 0.05,
+  recency: 0.20, outcome: 0.10, infoDensity: 0.15,
+};
 
 function calculateScoreV2(
   fragment: ContextFragment,
@@ -547,78 +510,58 @@ function calculateScoreV2(
   config: { alpha: number; beta: number; gamma: number },
   ctx: ScoreContext,
 ): number {
-  const rw = ctx.retrievalWeights;
+  const rw = DEFAULT_SCORE_WEIGHTS;
 
-  // Map α,β,γ to dimension group scaling factors.
-  // Default α=0.55, β=0.20, γ=0.25 → each scale = 1.0, so defaults are unchanged.
-  // When learner adjusts α,β,γ, the corresponding dimension groups scale proportionally.
-  const alphaScale = config.alpha / 0.55;   // relevance group (semantic, task, branch)
-  const betaScale  = config.beta  / 0.20;   // recency
-  const gammaScale = config.gamma / 0.25;   // density group (outcome, infoDensity)
+  const alphaScale = config.alpha / 0.55;
+  const betaScale  = config.beta  / 0.20;
+  const gammaScale = config.gamma / 0.25;
 
-  // Effective weights = base weights × group scale
-  const effSemantic    = rw.semanticWeight    * alphaScale;
-  const effTask        = rw.taskOverlapWeight * alphaScale;
-  const effBranch      = rw.branchMatchWeight * alphaScale;
-  const effRecency     = rw.recencyWeight     * betaScale;
-  const effOutcome     = rw.outcomeBonusWeight * gammaScale;
-  const effInfoDensity = rw.infoDensityWeight  * gammaScale;
+  const effSemantic    = rw.semantic    * alphaScale;
+  const effTask        = rw.taskOverlap * alphaScale;
+  const effBranch      = rw.branchMatch * alphaScale;
+  const effRecency     = rw.recency     * betaScale;
+  const effOutcome     = rw.outcome     * gammaScale;
+  const effInfoDensity = rw.infoDensity * gammaScale;
 
   const maxPossible = effSemantic + effTask + effBranch
     + effRecency + effOutcome + effInfoDensity;
 
-  // 1. 语义相似度 (0-1 → 乘以 effective semanticWeight)
-  // v3.2: use embedding cosine similarity when available, fall back to IDF
-  const semSim = ctx.embeddingScore !== undefined
-    ? ctx.embeddingScore
-    : computeIDFSimilarity(ctx.queryVector, fragment.content);
+  // 1. IDF-weighted semantic similarity
+  const semSim = computeIDFSimilarity(ctx.queryVector, fragment.content);
   const semanticScore = semSim * effSemantic;
 
-  // 2. 任务类型重叠 (0-1 → 乘以 effective taskOverlapWeight)
+  // 2. Task type/content overlap
   const taskOverlap = typeCompatibility(fragment.contentType, task.type);
   const taskScore = taskOverlap * effTask;
 
-  // 3. 分支匹配 (0-1 → 乘以 effective branchMatchWeight)
+  // 3. Branch match
   const branchMatch = (fragment.contentType === "source" &&
     ["code_generation", "code_review", "code_refactor", "debugging"].includes(task.type)) ? 1.0 :
     (fragment.contentType === "test" && task.type === "testing") ? 1.0 :
     (fragment.contentType === "docs" && ["documentation", "analysis"].includes(task.type)) ? 1.0 : 0.3;
   const branchScore = branchMatch * effBranch;
 
-  // 4. 指数衰减新近度 (0-1 → 乘以 effective recencyWeight)
+  // 4. Exponential recency decay
   const recencyRaw = computeExpRecency(ctx.recencyPosition, ctx.totalFragments);
   const recencyScore = recencyRaw * effRecency;
 
-  // 5. 历史表现加成 (0-1 → 乘以 effective outcomeBonusWeight)
-  let outcomeRaw = 0.5; // 中性默认
+  // 5. Outcome/history bonus
+  let outcomeRaw = 0.5;
   if (ctx.sourceBoostFn) {
     const boost = ctx.sourceBoostFn(fragment.source);
-    outcomeRaw = 0.5 + boost;
-    outcomeRaw = Math.max(0, Math.min(1, outcomeRaw));
+    outcomeRaw = Math.max(0, Math.min(1, 0.5 + boost));
   }
   const outcomeScore = outcomeRaw * effOutcome;
 
-  // 6. 信息密度加成 (0-1 → 乘以 effective infoDensityWeight)
+  // 6. Information density
   const densityRaw = computeInfoDensity(fragment);
   const densityScore = densityRaw * effInfoDensity;
 
   const totalScore = semanticScore + taskScore + branchScore
     + recencyScore + outcomeScore + densityScore;
 
-  // 归一化到 [0, 1]
   const normalized = totalScore / maxPossible;
-
-  // v3.7: Phase 2 — causal re-rank multiplier
-  // Applied after similarity normalization so causal signal gates relevance,
-  // not competes with it as a 7th dimension.
-  const causalFactor = ctx.causalBoostFn
-    ? ctx.causalBoostFn(fragment, task)
-    : 1.0;
-  // Clamp factor to [0.5, 1.5] then multiply. Final result clamped to [0, 1].
-  const factor = Math.max(0.5, Math.min(1.5, causalFactor));
-  const boosted = normalized * factor;
-
-  return Math.round(Math.min(1.0, boosted) * 10000) / 10000;
+  return Math.round(Math.min(1.0, normalized) * 10000) / 10000;
 }
 
 /**
@@ -643,7 +586,6 @@ function calculateScore(
     recencyPosition: recencyPos >= 0 ? recencyPos : 0,
     totalFragments: fragments.length,
     sourceBoostFn,
-    retrievalWeights: DEFAULT_RETRIEVAL_WEIGHTS,
   });
 }
 
@@ -805,13 +747,15 @@ function greedySelectV2(
     // Causal independence filtering removed (causal-graph.ts deleted — never trained on real data).
     const mmrSelected = mmrReRank(mmrCandidates, p1Count, mmrLambda,
       jaccardSimilarity,
-      // v4.1: Use entropyMMRBonus from retrieval-system for content/source diversity
+      // Simple diversity bonus: penalize same source file and same content type
       (candidate) => {
-        const frag = (candidate as any).fragment as import("../types.js").ContextFragment;
+        const frag = (candidate as any).fragment as ContextFragment;
         if (!frag) return 0;
         const selectedSources = result.map(r => r.fragment.source);
         const selectedTypes = result.map(r => r.fragment.contentType);
-        return entropyMMRBonus(frag.source, frag.contentType, selectedSources, selectedTypes);
+        const sourceBonus = selectedSources.includes(frag.source) ? 0.5 : 0;
+        const typeBonus = selectedTypes.filter(t => t === frag.contentType).length * 0.1;
+        return sourceBonus + typeBonus;
       },
     );
     for (const item of mmrSelected) {

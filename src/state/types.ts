@@ -396,6 +396,10 @@ export interface CurriculumPhaseConfig {
   explorationRate: number;
   surpriseWeight: number;
   consolidationInterval: number;
+  // v8: Phase-specific exploration params (autoresearch pattern)
+  mmrLambda: number;           // MMR diversity (low=explore, high=exploit)
+  curiosityWeight: number;     // curiosity bonus multiplier
+  adversarialInterval: number; // how often to run adversarial verification
 }
 
 // ── Logs ──

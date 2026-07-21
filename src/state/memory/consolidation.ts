@@ -78,13 +78,34 @@ export function consolidateMemories(
     const consolidated = createConsolidatedMemory(group, taskType);
     state.memories.push(consolidated);
 
-    // Mark sources as consolidated
+    // v8: Store undo log on each source memory (autoresearch pattern).
+    // Preserves original hypothesis, quality, timestamp, and merge target.
+    // Enables informed un-consolidation if the summary proves inaccurate.
     for (const source of group) {
       const idx = state.memories.findIndex(m => m.id === source.id);
       if (idx !== -1) {
         state.memories[idx].status = "consolidated";
+        // Attach undo info as an extended property
+        (state.memories[idx] as any)._consolidationUndoInfo = {
+          originalId: source.id,
+          mergedInto: consolidated.id,
+          originalHypothesis: source.hypothesis.slice(0, 200),
+          originalInsight: source.insight.slice(0, 200),
+          originalQuality: source.qualityScore,
+          originalCausal: source.causalUtility,
+          consolidatedAt: nowISO,
+        };
       }
     }
+
+    // v8: Attach consolidation metadata to the consolidated entry
+    (consolidated as any)._consolidationV4 = {
+      tokensSaved: saved,
+      sourceCount: group.length,
+      successCount: group.filter(m => m.outcome === "success").length,
+      failureCount: group.filter(m => m.outcome !== "success").length,
+      subsystem: taskType,
+    };
 
     const saved = estimateTokensSaved(group, consolidated);
     tokensFreed += saved;

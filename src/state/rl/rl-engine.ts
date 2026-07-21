@@ -445,35 +445,72 @@ export class RLEngineV5 {
     return result;
   }
 
+  /**
+   * v8: Granular adversarial verification (autoresearch pattern).
+   *
+   * Three-tier scoring based on gap from current best/average:
+   *   best_gap > 2%  → significant downgrade (obsolete success)
+   *   avg_gap > 1%   → mild downgrade (above average but slipping)
+   *   else           → boost confidence (adversarial test PASSED)
+   *
+   * Karpathy principle: "Build abstractions from experience."
+   * A "success" at iteration 5 may be merely average by iteration 50.
+   * This prevents "success inflation" in the retrieval system.
+   */
   runAdversarialVerification(): VerificationResult {
-    // Basic implementation: re-score oldest memories
     const state = this.stateManager.getSnapshot() as SharedStateV5;
     const active = state.memories.filter(m => m.status === "active");
-    const oldestN = Math.max(1, Math.floor(active.length * 0.1));
-    const oldest = active
+    if (active.length < 10) return { verifiedCount: 0, staleCount: 0, overturnedCount: 0 };
+
+    // Find successes with quality metrics
+    const successes = active.filter(m => m.outcome === "success" && m.qualityScore > 0);
+    if (successes.length < 5) return { verifiedCount: 0, staleCount: 0, overturnedCount: 0 };
+
+    const bestScore = Math.max(...successes.map(m => m.qualityScore));
+    const avgScore = successes.reduce((s, m) => s + m.qualityScore, 0) / successes.length;
+
+    // Find candidates: oldest 10% of successes, not verified recently
+    const oldestN = Math.min(5, Math.floor(active.length * 0.1));
+    const candidates = active
+      .filter(m => m.outcome === "success")
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
       .slice(0, oldestN);
 
-    let staleCount = 0, overturnedCount = 0;
-    for (const mem of oldest) {
-      const baseline = state.valueFunction.baselines[mem.taskType];
-      const newCausal = mem.qualityScore - baseline.ema;
-      const capped = Math.max(0, Math.min(1, newCausal));
-      const degradation = mem.causalUtility > 0.1
-        ? (mem.causalUtility - capped) / mem.causalUtility
-        : 0;
-      if (degradation > 0.30) {
-        staleCount += 1;
+    let verifiedCount = 0, staleCount = 0, overturnedCount = 0;
+
+    for (const mem of candidates) {
+      if (bestScore <= 0) continue;
+
+      // Three-tier gap scoring (autoresearch pattern)
+      const bestGap = Math.max(0, (bestScore - mem.qualityScore) / Math.max(bestScore, 0.001));
+      const avgGap = (mem.qualityScore - avgScore) / Math.max(avgScore, 0.001);
+
+      if (bestGap > 0.02) {
+        // >2% worse than current best → this "success" is obsolete
         this.stateManager.updateMemory(mem.id, {
-          thompsonAlpha: mem.thompsonAlpha * 0.5,
-          thompsonBeta: mem.thompsonBeta * 2,
-          causalUtility: capped,
+          thompsonAlpha: Math.max(0.5, mem.thompsonAlpha * 0.7),
+          thompsonBeta: Math.min(20, mem.thompsonBeta * 1.3),
+          retrievalUtility: Math.max(0.2, mem.retrievalUtility * 0.8),
+        });
+        overturnedCount++;
+      } else if (avgGap > 0.01) {
+        // Above average but not best → mild downgrade
+        this.stateManager.updateMemory(mem.id, {
+          thompsonAlpha: Math.max(0.5, mem.thompsonAlpha * 0.85),
+        });
+        staleCount++;
+      } else {
+        // Still competitive → boost (adversarial test PASSED)
+        this.stateManager.updateMemory(mem.id, {
+          thompsonAlpha: Math.min(20, mem.thompsonAlpha * 1.05),
+          causalUtility: Math.min(0.95, mem.causalUtility * 1.05),
         });
       }
+      verifiedCount++;
     }
 
     this.stateManager.bumpLastUpdated();
-    return { verifiedCount: oldestN, staleCount, overturnedCount };
+    return { verifiedCount, staleCount, overturnedCount };
   }
 
   runCrossContextSync(): SyncResult {

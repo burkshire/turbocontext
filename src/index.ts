@@ -256,7 +256,7 @@ export class TurboContextEngine {
         originalTokens, compressedTokens,
         compressionRatio: 1 - (compressedTokens / Math.max(1, originalTokens)),
         fragments: compressedFrags,
-        coverage: contextFragments.length > 0 ? 1.0 : 0,
+        coverage: { all_files: 1.0 },  // v8: match full pipeline object format
       };
       if (this.executionCount <= 1) {
         console.log(`[TurboContext v7] Fast path: ${contextFragments.length} files → direct compression (${(compressed.compressionRatio * 100).toFixed(0)}% ratio)`);

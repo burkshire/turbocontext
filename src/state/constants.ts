@@ -123,13 +123,16 @@ export const DEFAULT_POLICY: PolicyState = {
 };
 
 // ── Default curriculum ──
+// v8: Phase-specific exploration parameters (autoresearch pattern)
+// Each phase adjusts MMR lambda, curiosity weight, and adversarial verification
+// cadence in addition to the existing mutation/exploration/surprise params.
 export const DEFAULT_CURRICULUM: CurriculumState = {
   phaseBoundaries: [10, 30, 60],
   phases: {
-    0: { name: "broad_exploration", learningInterval: 3, mutationMagnitude: 0.25, explorationRate: 0.8, surpriseWeight: 1.2, consolidationInterval: 20 },
-    1: { name: "focused_exploitation", learningInterval: 5, mutationMagnitude: 0.15, explorationRate: 0.5, surpriseWeight: 1.0, consolidationInterval: 15 },
-    2: { name: "principled_optimization", learningInterval: 8, mutationMagnitude: 0.08, explorationRate: 0.2, surpriseWeight: 0.8, consolidationInterval: 10 },
-    3: { name: "adversarial_refinement", learningInterval: 10, mutationMagnitude: 0.06, explorationRate: 0.4, surpriseWeight: 1.0, consolidationInterval: 8 },
+    0: { name: "broad_exploration", learningInterval: 3, mutationMagnitude: 0.25, explorationRate: 0.8, surpriseWeight: 1.2, consolidationInterval: 20, mmrLambda: 0.35, curiosityWeight: 1.5, adversarialInterval: 20 },
+    1: { name: "focused_exploitation", learningInterval: 5, mutationMagnitude: 0.15, explorationRate: 0.5, surpriseWeight: 1.0, consolidationInterval: 15, mmrLambda: 0.55, curiosityWeight: 1.0, adversarialInterval: 15 },
+    2: { name: "principled_optimization", learningInterval: 8, mutationMagnitude: 0.08, explorationRate: 0.2, surpriseWeight: 0.8, consolidationInterval: 10, mmrLambda: 0.70, curiosityWeight: 0.5, adversarialInterval: 10 },
+    3: { name: "adversarial_refinement", learningInterval: 10, mutationMagnitude: 0.06, explorationRate: 0.4, surpriseWeight: 1.0, consolidationInterval: 8, mmrLambda: 0.60, curiosityWeight: 0.7, adversarialInterval: 8 },
   },
 };
 

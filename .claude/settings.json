@@ -1,0 +1,9 @@
+{
+  "skills": {
+    "turbocontext": {
+      "name": "turbocontext",
+      "source": "../skill/turbocontext.md",
+      "description": "TurboContext: Adaptive AI context optimization & quality-weighted generation algorithm"
+    }
+  }
+}

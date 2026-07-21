@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Turbocontext v5 State Schema",
+  "description": "Complete v5 state schema — types, constants, validation, atomic I/O, and SharedStateManager. This file is a TypeScript module implementing the full state layer per the v5 RL architecture. All schema types are available as runtime-accessible JSON for introspection.",
+  "type": "object",
+  "properties": {
+    "version": { "const": 5, "description": "Schema version marker" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "lastUpdated": { "type": "string", "format": "date-time" },
+    "totalInvocations": { "type": "integer", "minimum": 0 },
+    "trials": { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
+    "memories": { "type": "array", "items": { "$ref": "#/$defs/IndexedMemory" } },
+    "coldStorage": { "type": "array", "items": { "$ref": "#/$defs/IndexedMemory" } },
+    "policy": { "$ref": "#/$defs/PolicyState" },
+    "valueFunction": { "$ref": "#/$defs/ValueFunctionState" },
+    "predictiveModel": { "$ref": "#/$defs/PredictiveModelState" },
+    "curiosity": { "$ref": "#/$defs/CuriosityState" },
+    "retrievalStrategy": { "$ref": "#/$defs/RetrievalStrategyState" },
+    "curriculum": { "$ref": "#/$defs/CurriculumState" },
+    "consolidationLog": { "type": "array", "items": { "$ref": "#/$defs/ConsolidationEntry" } },
+    "crossContextBuffer": { "$ref": "#/$defs/CrossContextBuffer" },
+    "evolutionLog": { "type": "array", "items": { "$ref": "#/$defs/EvolutionEntry" } }
+  },
+  "required": [
+    "version", "createdAt", "lastUpdated", "totalInvocations",
+    "trials", "memories", "coldStorage",
+    "policy", "valueFunction", "predictiveModel", "curiosity",
+    "retrievalStrategy", "curriculum",
+    "consolidationLog", "crossContextBuffer", "evolutionLog"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Trial": {
+      "type": "object",
+      "required": ["id", "timestamp", "context", "taskType", "descriptionHash", "descriptionLength", "capabilityRequirements", "compressionRatio", "compressionWeights", "temperatureSchedule", "modelTier", "retrievalTopK", "tokenBudgetUsed", "maxAttempts", "outcome", "qualityScores", "qualityScore", "costUsd", "latencyMs", "attemptCount", "bestAttemptIndex", "predictedQuality", "surprise", "counterfactuals", "curriculumPhase", "retrievedMemoryIds", "referencedMemoryIds", "advantage", "causalUtility", "herGoals"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "description": "UUID v4" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "context": { "enum": ["skill", "autonomous"] },
+        "taskType": { "enum": ["code_review", "code_generation", "debugging", "refactoring", "documentation", "architecture"] },
+        "descriptionHash": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "descriptionLength": { "type": "integer", "minimum": 1, "maximum": 50000 },
+        "capabilityRequirements": { "type": "array", "items": { "type": "string" } },
+        "compressionRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "compressionWeights": { "$ref": "#/$defs/CompressionWeights" },
+        "temperatureSchedule": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number", "minimum": 0, "maximum": 2 } },
+        "modelTier": { "enum": ["fast", "medium", "best"] },
+        "retrievalTopK": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "tokenBudgetUsed": { "type": "integer", "minimum": 1 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "outcome": { "enum": ["success", "failure", "crash"] },
+        "qualityScores": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number", "minimum": 0, "maximum": 1 } },
+        "qualityScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "costUsd": { "type": "number", "minimum": 0 },
+        "latencyMs": { "type": "number", "minimum": 0 },
+        "attemptCount": { "type": "integer", "minimum": 1 },
+        "bestAttemptIndex": { "type": "integer", "minimum": 0 },
+        "predictedQuality": { "type": ["number", "null"] },
+        "surprise": { "type": "number", "minimum": 0 },
+        "counterfactuals": { "type": "array", "items": { "type": "string" } },
+        "curriculumPhase": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "retrievedMemoryIds": { "type": "array", "items": { "type": "string" } },
+        "referencedMemoryIds": { "type": "array", "items": { "type": "string" } },
+        "advantage": { "type": ["number", "null"] },
+        "causalUtility": { "type": "number", "minimum": 0, "maximum": 1 },
+        "herGoals": { "type": "array", "items": { "$ref": "#/$defs/HERGoal" } }
+      }
+    },
+    "HERGoal": {
+      "type": "object",
+      "required": ["goal", "outcome", "reward", "insight"],
+      "properties": {
+        "goal": { "type": "string" },
+        "outcome": { "const": "success" },
+        "reward": { "type": "number", "minimum": 0, "maximum": 1 },
+        "insight": { "type": "string" }
+      }
+    },
+    "CompressionWeights": {
+      "type": "object",
+      "required": ["alpha", "beta", "gamma"],
+      "properties": {
+        "alpha": { "type": "number", "minimum": 0, "maximum": 1, "description": "Hypothesis specificity weight" },
+        "beta": { "type": "number", "minimum": 0, "maximum": 1, "description": "Code context weight" },
+        "gamma": { "type": "number", "minimum": 0, "maximum": 1, "description": "Relevant examples weight" }
+      }
+    },
+    "IndexedMemory": {
+      "type": "object",
+      "required": ["id", "sourceTrialIds", "createdAt", "lastRetrievedAt", "retrievalCount", "taskType", "capabilityRequirements", "hypothesis", "insight", "counterfactuals", "outcome", "qualityScore", "compressionRatio", "modelTier", "paramsUsed", "thompsonAlpha", "thompsonBeta", "causalUtility", "retrievalUtility", "tdError", "surprise", "consolidationCount", "status", "coldSince", "expiresAt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+        "sourceTrialIds": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastRetrievedAt": { "type": ["string", "null"], "format": "date-time" },
+        "retrievalCount": { "type": "integer", "minimum": 0 },
+        "taskType": { "enum": ["code_review", "code_generation", "debugging", "refactoring", "documentation", "architecture"] },
+        "capabilityRequirements": { "type": "array", "items": { "type": "string" } },
+        "hypothesis": { "type": "string" },
+        "insight": { "type": "string" },
+        "counterfactuals": { "type": "array", "items": { "type": "string" } },
+        "outcome": { "enum": ["success", "failure", "crash"] },
+        "qualityScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "compressionRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "modelTier": { "enum": ["fast", "medium", "best"] },
+        "paramsUsed": { "$ref": "#/$defs/MemoryParamsUsed" },
+        "thompsonAlpha": { "type": "number", "minimum": 0 },
+        "thompsonBeta": { "type": "number", "minimum": 0 },
+        "causalUtility": { "type": "number", "minimum": 0, "maximum": 1 },
+        "retrievalUtility": { "type": "number", "minimum": 0, "maximum": 1 },
+        "tdError": { "type": "number" },
+        "surprise": { "type": "number", "minimum": 0 },
+        "consolidationCount": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["active", "cold", "consolidated"] },
+        "coldSince": { "type": ["string", "null"], "format": "date-time" },
+        "expiresAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "MemoryParamsUsed": {
+      "type": "object",
+      "required": ["alpha", "beta", "gamma", "theta1", "theta2", "temperature", "tokenBudget"],
+      "properties": {
+        "alpha": { "type": "number" },
+        "beta": { "type": "number" },
+        "gamma": { "type": "number" },
+        "theta1": { "type": "number" },
+        "theta2": { "type": "number" },
+        "temperature": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+        "tokenBudget": { "type": "integer" }
+      }
+    },
+    "PolicyState": {
+      "type": "object",
+      "required": ["compression", "quality", "temperature", "modelTiers", "retrieval", "exploration", "perType"],
+      "properties": {
+        "compression": { "$ref": "#/$defs/PolicyCompression" },
+        "quality": { "$ref": "#/$defs/PolicyQuality" },
+        "temperature": { "$ref": "#/$defs/PolicyTemperature" },
+        "modelTiers": { "$ref": "#/$defs/PolicyModelTiers" },
+        "retrieval": { "$ref": "#/$defs/PolicyRetrieval" },
+        "exploration": { "$ref": "#/$defs/PolicyExploration" },
+        "perType": { "type": "object", "additionalProperties": { "$ref": "#/$defs/PolicyOverrides" } }
+      }
+    },
+    "PolicyCompression": {
+      "type": "object",
+      "required": ["alpha", "beta", "gamma", "theta1", "theta2"],
+      "properties": {
+        "alpha": { "type": "number", "minimum": 0.1, "maximum": 0.95 },
+        "beta": { "type": "number", "minimum": 0.1, "maximum": 0.95 },
+        "gamma": { "type": "number", "minimum": 0.1, "maximum": 0.95 },
+        "theta1": { "type": "number", "minimum": 0.05, "maximum": 0.80, "description": "Minimum compression threshold" },
+        "theta2": { "type": "number", "minimum": 0.10, "maximum": 0.90, "description": "Aggressive compression threshold" }
+      }
+    },
+    "PolicyQuality": {
+      "type": "object",
+      "required": ["threshold", "maxAttempts", "dimWeights"],
+      "properties": {
+        "threshold": { "type": "number", "minimum": 0.5, "maximum": 0.95 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "dimWeights": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number" }, "description": "[completeness, correctness, consistency, format]" }
+      }
+    },
+    "PolicyTemperature": {
+      "type": "object",
+      "required": ["t0", "t1", "t2"],
+      "properties": {
+        "t0": { "type": "number", "minimum": 0, "maximum": 1 },
+        "t1": { "type": "number", "minimum": 0, "maximum": 1 },
+        "t2": { "type": "number", "minimum": 0, "maximum": 1.5 }
+      }
+    },
+    "PolicyModelTiers": {
+      "type": "object",
+      "required": ["lowComplexity", "highComplexity"],
+      "properties": {
+        "lowComplexity": { "type": "integer", "minimum": 500, "maximum": 5000, "description": "Below this uses fast model" },
+        "highComplexity": { "type": "integer", "minimum": 2000, "maximum": 20000, "description": "Above this uses best model" }
+      }
+    },
+    "PolicyRetrieval": {
+      "type": "object",
+      "required": ["mmrLambda", "topK", "dimWeights", "tokenBudgetTiers", "recencyDecay", "outcomeBonus", "infoDensityBonus"],
+      "properties": {
+        "mmrLambda": { "type": "number", "minimum": 0.1, "maximum": 0.95 },
+        "topK": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "dimWeights": {
+          "type": "object",
+          "properties": {
+            "idfOverlap": { "type": "number" },
+            "capabilityJaccard": { "type": "number" },
+            "taskTypeMatch": { "type": "number" },
+            "recencyDecay": { "type": "number" },
+            "outcomeBonus": { "type": "number" },
+            "infoDensity": { "type": "number" },
+            "thompsonUtility": { "type": "number" }
+          }
+        },
+        "tokenBudgetTiers": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer" }, "description": "[small, medium, large] token budgets" },
+        "recencyDecay": { "type": "number", "minimum": 0.01, "maximum": 0.5 },
+        "outcomeBonus": { "type": "number", "minimum": 0, "maximum": 0.5 },
+        "infoDensityBonus": { "type": "number", "minimum": 0, "maximum": 0.3 }
+      }
+    },
+    "PolicyExploration": {
+      "type": "object",
+      "required": ["mutationMagnitude", "ucbC", "thompsonPriorStrength", "rndWeight"],
+      "properties": {
+        "mutationMagnitude": { "type": "number", "minimum": 0.01, "maximum": 0.5 },
+        "ucbC": { "type": "number", "minimum": 0.5, "maximum": 5 },
+        "thompsonPriorStrength": { "type": "number", "minimum": 0.5, "maximum": 10 },
+        "rndWeight": { "type": "number", "minimum": 0, "maximum": 0.5 }
+      }
+    },
+    "PolicyOverrides": {
+      "type": "object",
+      "properties": {
+        "compression": { "type": "object" },
+        "quality": { "type": "object" },
+        "temperature": { "type": "object" },
+        "modelTiers": { "type": "object" },
+        "retrieval": { "type": "object" },
+        "exploration": { "type": "object" }
+      }
+    },
+    "ValueFunctionState": {
+      "type": "object",
+      "required": ["baselines", "globalBaseline", "traces", "td", "memoryPriorities", "maxPriority"],
+      "properties": {
+        "baselines": { "type": "object", "additionalProperties": { "$ref": "#/$defs/TaskTypeBaseline" } },
+        "globalBaseline": { "type": "number" },
+        "traces": { "type": "object", "additionalProperties": { "type": "number" }, "description": "paramName → eligibility trace value" },
+        "td": { "$ref": "#/$defs/TDHyperparams" },
+        "memoryPriorities": { "type": "object", "additionalProperties": { "type": "number" } },
+        "maxPriority": { "type": "number", "minimum": 0 }
+      }
+    },
+    "TaskTypeBaseline": {
+      "type": "object",
+      "required": ["mean", "ema", "count", "recentScores", "slope"],
+      "properties": {
+        "mean": { "type": "number" },
+        "ema": { "type": "number" },
+        "count": { "type": "integer", "minimum": 0 },
+        "recentScores": { "type": "array", "maxItems": 10, "items": { "type": "number" } },
+        "slope": { "type": "number" }
+      }
+    },
+    "TDHyperparams": {
+      "type": "object",
+      "required": ["gamma", "lambda", "alpha", "totalUpdates"],
+      "properties": {
+        "gamma": { "type": "number", "minimum": 0, "maximum": 1, "description": "Discount factor (default 0.90)" },
+        "lambda": { "type": "number", "minimum": 0, "maximum": 1, "description": "Trace decay (default 0.70)" },
+        "alpha": { "type": "number", "minimum": 0, "maximum": 1, "description": "Learning rate (default 0.10)" },
+        "totalUpdates": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "PredictiveModelState": {
+      "type": "object",
+      "required": ["weights", "intercept", "learningRate", "nUpdates", "featureStats", "recentErrors", "calibrationCurve"],
+      "properties": {
+        "weights": { "type": "object", "additionalProperties": { "type": "number" } },
+        "intercept": { "type": "number" },
+        "learningRate": { "type": "number", "minimum": 0 },
+        "nUpdates": { "type": "integer", "minimum": 0 },
+        "featureStats": { "type": "object", "additionalProperties": { "$ref": "#/$defs/FeatureStat" } },
+        "recentErrors": { "type": "array", "maxItems": 20, "items": { "type": "number" } },
+        "calibrationCurve": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/CalibrationBin" } }
+      }
+    },
+    "FeatureStat": {
+      "type": "object",
+      "required": ["mean", "std", "n", "M2"],
+      "properties": {
+        "mean": { "type": "number" },
+        "std": { "type": "number", "minimum": 0 },
+        "n": { "type": "integer", "minimum": 0 },
+        "M2": { "type": "number" }
+      }
+    },
+    "CalibrationBin": {
+      "type": "object",
+      "required": ["lower", "upper", "predictedMean", "actualMean", "count"],
+      "properties": {
+        "lower": { "type": "number", "minimum": 0, "maximum": 1 },
+        "upper": { "type": "number", "minimum": 0, "maximum": 1 },
+        "predictedMean": { "type": "number" },
+        "actualMean": { "type": "number" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "CuriosityState": {
+      "type": "object",
+      "required": ["idfCache", "taskTypeExploration", "capabilityCoverage", "surpriseStats", "rnd"],
+      "properties": {
+        "idfCache": { "$ref": "#/$defs/IDFCache" },
+        "taskTypeExploration": { "type": "object", "additionalProperties": { "$ref": "#/$defs/TaskTypeExploration" } },
+        "capabilityCoverage": { "type": "object", "additionalProperties": { "type": "number" } },
+        "surpriseStats": { "$ref": "#/$defs/SurpriseStats" },
+        "rnd": { "$ref": "#/$defs/RNDState" }
+      }
+    },
+    "IDFCache": {
+      "type": "object",
+      "required": ["weights", "documentCount", "lastRebuilt"],
+      "properties": {
+        "weights": { "type": "object", "additionalProperties": { "type": "number" } },
+        "documentCount": { "type": "integer", "minimum": 0 },
+        "lastRebuilt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "TaskTypeExploration": {
+      "type": "object",
+      "required": ["count", "lastExplored", "avgSurprise", "successRate"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "lastExplored": { "type": "string", "format": "date-time" },
+        "avgSurprise": { "type": "number" },
+        "successRate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "SurpriseStats": {
+      "type": "object",
+      "required": ["globalMean", "globalStd", "recentValues", "anomalyThreshold"],
+      "properties": {
+        "globalMean": { "type": "number" },
+        "globalStd": { "type": "number", "minimum": 0 },
+        "recentValues": { "type": "array", "maxItems": 50, "items": { "type": "number" } },
+        "anomalyThreshold": { "type": "number" }
+      }
+    },
+    "RNDState": {
+      "type": "object",
+      "required": ["targetProjection", "predictorWeights", "predictorBias", "errorMean", "errorStd"],
+      "properties": {
+        "targetProjection": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "predictorWeights": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "predictorBias": { "type": "array", "items": { "type": "number" } },
+        "errorMean": { "type": "number" },
+        "errorStd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "RetrievalStrategyState": {
+      "type": "object",
+      "required": ["active", "ancestor", "ancestorFitness", "pendingMutation", "trialsInGeneration", "generation", "experienceLibrary"],
+      "properties": {
+        "active": { "$ref": "#/$defs/ActiveRetrievalStrategy" },
+        "ancestor": { "oneOf": [{ "$ref": "#/$defs/ActiveRetrievalStrategy" }, { "type": "null" }] },
+        "ancestorFitness": { "type": "number" },
+        "pendingMutation": { "oneOf": [{ "$ref": "#/$defs/PendingMutation" }, { "type": "null" }] },
+        "trialsInGeneration": { "type": "integer", "minimum": 0 },
+        "generation": { "type": "integer", "minimum": 0 },
+        "experienceLibrary": { "type": "array", "items": { "$ref": "#/$defs/StrategyExperience" } }
+      }
+    },
+    "ActiveRetrievalStrategy": {
+      "type": "object",
+      "required": ["mmrLambda", "topK", "dimWeights", "tokenBudgetTiers"],
+      "properties": {
+        "mmrLambda": { "type": "number" },
+        "topK": { "type": "integer" },
+        "dimWeights": { "type": "object", "additionalProperties": { "type": "number" } },
+        "tokenBudgetTiers": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer" } }
+      }
+    },
+    "PendingMutation": {
+      "type": "object",
+      "required": ["targetParam", "oldValue", "newValue"],
+      "properties": {
+        "targetParam": { "type": "string" },
+        "oldValue": { "type": "number" },
+        "newValue": { "type": "number" }
+      }
+    },
+    "StrategyExperience": {
+      "type": "object",
+      "required": ["scenario", "mutation", "fitnessDelta", "decision"],
+      "properties": {
+        "scenario": { "type": "string" },
+        "mutation": {
+          "type": "object",
+          "required": ["param", "direction"],
+          "properties": {
+            "param": { "type": "string" },
+            "direction": { "enum": ["increase", "decrease"] }
+          }
+        },
+        "fitnessDelta": { "type": "number" },
+        "decision": { "enum": ["keep", "revert", "no_mutation"] }
+      }
+    },
+    "CurriculumState": {
+      "type": "object",
+      "required": ["phaseBoundaries", "phases"],
+      "properties": {
+        "phaseBoundaries": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "integer" } },
+        "phases": {
+          "type": "object",
+          "properties": {
+            "0": { "$ref": "#/$defs/CurriculumPhaseConfig" },
+            "1": { "$ref": "#/$defs/CurriculumPhaseConfig" },
+            "2": { "$ref": "#/$defs/CurriculumPhaseConfig" },
+            "3": { "$ref": "#/$defs/CurriculumPhaseConfig" }
+          }
+        }
+      }
+    },
+    "CurriculumPhaseConfig": {
+      "type": "object",
+      "required": ["name", "learningInterval", "mutationMagnitude", "explorationRate", "surpriseWeight", "consolidationInterval"],
+      "properties": {
+        "name": { "type": "string" },
+        "learningInterval": { "type": "integer", "minimum": 1 },
+        "mutationMagnitude": { "type": "number", "minimum": 0.01, "maximum": 0.5 },
+        "explorationRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "surpriseWeight": { "type": "number" },
+        "consolidationInterval": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ConsolidationEntry": {
+      "type": "object",
+      "required": ["timestamp", "action", "sourceMemoryIds", "targetMemoryId", "tokensSaved", "qualityEstimate", "reason"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "action": { "enum": ["consolidate", "archive_cold_storage"] },
+        "sourceMemoryIds": { "type": "array", "items": { "type": "string" } },
+        "targetMemoryId": { "type": ["string", "null"] },
+        "tokensSaved": { "type": "integer" },
+        "qualityEstimate": { "type": "number" },
+        "reason": { "type": "string" }
+      }
+    },
+    "EvolutionEntry": {
+      "type": "object",
+      "required": ["timestamp", "generation", "mutation", "fitnessBefore", "fitnessAfter", "delta", "decision", "scenario"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "generation": { "type": "integer" },
+        "mutation": {
+          "type": "object",
+          "required": ["param", "oldValue", "newValue"],
+          "properties": {
+            "param": { "type": "string" },
+            "oldValue": { "type": "number" },
+            "newValue": { "type": "number" }
+          }
+        },
+        "fitnessBefore": { "type": "number" },
+        "fitnessAfter": { "type": "number" },
+        "delta": { "type": "number" },
+        "decision": { "enum": ["keep", "revert", "no_mutation"] },
+        "scenario": { "type": "string" }
+      }
+    },
+    "CrossContextBuffer": {
+      "type": "object",
+      "required": ["pendingTrialsFromSkill", "refinedInsights", "canonicalStrategies"],
+      "properties": {
+        "pendingTrialsFromSkill": {
+          "type": "object",
+          "required": ["trials", "oldestPending", "count"],
+          "properties": {
+            "trials": { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
+            "oldestPending": { "type": "string", "format": "date-time" },
+            "count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "refinedInsights": {
+          "type": "object",
+          "required": ["updatedMemoryUtils", "discoveredPatterns", "recommendedPolicyDiffs", "lastSyncTimestamp", "agentIterationsProcessed"],
+          "properties": {
+            "updatedMemoryUtils": { "type": "object", "additionalProperties": { "type": "number" } },
+            "discoveredPatterns": { "type": "array", "items": { "type": "string" } },
+            "recommendedPolicyDiffs": { "type": "object" },
+            "lastSyncTimestamp": { "type": "string", "format": "date-time" },
+            "agentIterationsProcessed": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "canonicalStrategies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["strategyId", "taskType", "pattern", "params", "successRate", "trialCount", "discoveredBy", "discoveredAt"],
+            "properties": {
+              "strategyId": { "type": "string" },
+              "taskType": { "enum": ["code_review", "code_generation", "debugging", "refactoring", "documentation", "architecture"] },
+              "pattern": { "type": "string" },
+              "params": { "type": "object" },
+              "successRate": { "type": "number", "minimum": 0, "maximum": 1 },
+              "trialCount": { "type": "integer", "minimum": 0 },
+              "discoveredBy": { "enum": ["skill", "autonomous"] },
+              "discoveredAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

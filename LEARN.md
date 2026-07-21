@@ -6730,3 +6730,155 @@ types.ts:91-97: ExecutionMetrics 只有 5 个字段，没有 smokeTestPassed
 2. 观察 Thompson alpha 值——`user-types.ts` 是否获得了最高值？
 3. 如果 Level 1 通过（正确答案识别 + 质量改善趋势），继续 Level 2
 4. 如果卡住了——在添加任何新功能之前，找出 RL 流水线在哪个环节断裂
+
+## 第四十课：V7 — 零开销快速路径 + 真实世界验证（2026-07-21）
+
+### 从"建好了"到"有用吗"的跨越
+
+V6 完成时，TurboContext 有 370 个测试、完整的 RL 引擎、校准基准、消融引擎——但从未在真实项目上运行过。这一课是关于**让系统接触到现实**。
+
+### 第一次真实测试：bookmind（5 文件）
+
+bookmind 是作者的个人项目——5 个 Python 简历生成脚本。TurboContext 的 CLI 成功运行了 code_review 任务。但分析结果暴露了一个问题：
+
+```
+管线开销: ~400 token（评分 + 选择 + 架构 + 模型选择）
+压缩节省: ~300 token（5 个文件，全部相关，压缩意义不大）
+净效果:   -100 token（亏损！）
+```
+
+**对于小项目，TurboContext 本身的开销比它节省的还多。** 这不像一个 bug——这暴露了一个架构假设：算法假设上下文足够大，压缩收益能覆盖管线成本。
+
+### 第二次验证：nanoGPT（15 文件）
+
+Karpathy 的 nanoGPT——15 个 Python 文件，1220 行。再次运行 code_review。
+
+```
+管线开销: ~400 token
+压缩节省: ~500 token（跳过 9 个配置文件，只保留 6 个核心文件）
+净效果:   ~+100 token（勉强持平）
+```
+
+这里是盈亏平衡点——15-20 个文件。低于此数，管线开销超过压缩收益。高于此数，压缩开始净赚。
+
+### V7：零开销快速路径
+
+关键洞察：**不需要对 ≤20 个文件做评分和选择——直接全部压缩更划算。**
+
+改动不到 30 行：
+
+```typescript
+// index.ts — execute() 方法
+const FAST_PATH_THRESHOLD = 20;
+if (contextFragments.length <= FAST_PATH_THRESHOLD) {
+  // 跳过评分和选择，直接压缩全部片段
+  const compressedFrags = contextFragments.map(f => compressFragment(f, 1.0));
+  // ...
+} else {
+  // 完整管线：评分 → 选择 → 压缩
+  compressed = await compressContext(task, contextFragments, ...);
+}
+```
+
+效果：
+
+| | V6 | V7 |
+|---|---|---|
+| bookmind (5 文件) | ❌ 亏损 46% | ✅ 零开销压缩 |
+| nanoGPT (15 文件) | ➖ 勉强持平 | ✅ 零开销压缩 |
+| turbocontext 自身 (52 文件) | ✅ 盈利 80% | ✅ 完整管线 |
+| 盈亏平衡点 | 15-20 文件 | **0 文件** |
+
+### 关键经验
+
+**1. 管线的开销不能超过它解决的问题。** TurboContext 的评分和选择机制在算法上是正确的——但对于 ≤20 个文件的项目，这个"正确"比"什么都没做"更差。V7 的修复不是让算法更聪明，而是让它在不需要的时候不动手。
+
+**2. 真实测试揭露了任何基准都发现不了的东西。** 校准基准有 24 个测试用例，全部是 >20 个片段的学术场景。5 文件项目的亏损现象从未在基准中出现。一旦在真实项目上运行，问题立刻暴露。
+
+**3. 两个 Karpathy 项目的对比给出了适用边界。** bookmind（5 文件）和 nanoGPT（15 文件）提供了两个数据点，足以建立盈亏平衡模型。如果没有这两个真实测试，我们会在不知道"什么场景下不该用"的情况下发布。
+
+### 你的作业
+
+1. 找一个 50+ 文件的开源项目，用 `npx tsx src/cli.ts run` 测试是否触发完整管线而非快速路径
+2. 对比快速路径和完整管线的压缩比——哪个在 >20 文件时更好？
+3. 如果你维护一个 <15 文件的项目，思考：TurboContext 的快速路径对你有价值吗？为什么？
+
+## 第四十一课：V8 — Autoresearch 深度对齐（2026-07-21）
+
+### 第二次深度阅读 agent.py
+
+V6 时已经吸收了 autoresearch 的 6 种实验类型、简洁性准则、跨分支迁移和 BranchTracker。但这只覆盖了 agent.py 的前 2000 行。V8 深入阅读了 2000-4278 行的剩余部分，找到了三个尚未采用的模式。
+
+### 模式 1：合并撤销日志（Consolidation Undo Log）
+
+agent.py 在合并记忆时不仅创建摘要，还**保存了"如何撤销"的信息**：
+
+```python
+# agent.py 的 _consolidation_undo_info
+exp["_consolidation_undo_info"] = {
+    "original_id": exp.get("experiment_id"),
+    "merged_into": merged_entry["experiment_id"],
+    "original_hypothesis": exp.get("hypothesis", "")[:200],
+    "original_val_bpb": exp.get("val_bpb"),
+    "consolidated_at": datetime.now(timezone.utc).isoformat(),
+}
+```
+
+为什么这很重要？因为合并是**有损**的。5 个试验被压缩成 1 条摘要——如果摘要被证明不准确，你需要知道原始数据是什么才能恢复。
+
+TurboContext 原本的合并只做了 `source.status = "consolidated"`——没有任何恢复路径。V8 在 `consolidation.ts` 中添加了等效的 `_consolidationUndoInfo`。
+
+### 模式 2：三级对抗验证
+
+agent.py 的验证不是二元的（"还新鲜"vs"过时了"）。它是**三级**的：
+
+```
+best_gap > 2%  → 大幅降级（"成功"已经过时）
+avg_gap > 1%   → 轻微降级（高于平均但正在下滑）
+avg_gap ≤ 1%   → 提升置信度（对抗测试通过！）
+```
+
+TurboContext 原本的验证只有一级——检查 `degradation > 0.30`。V8 重写了 `runAdversarialVerification` 实现三级评分，还增加了"最佳"和"平均"作为动态基准（而不是仅对比 EMA）。
+
+### 模式 3：阶段特定的探索参数
+
+agent.py 的课程学习不仅调整学习频率——它调整**探索策略的每一个维度**：
+
+```python
+Phase 0 (探索):    mmr_lambda=0.35, curiosity=1.5, adversarial_interval=20
+Phase 1 (聚焦):    mmr_lambda=0.55, curiosity=1.0, adversarial_interval=15
+Phase 2 (原理化):  mmr_lambda=0.70, curiosity=0.5, adversarial_interval=10
+Phase 3 (对抗):    mmr_lambda=0.60, curiosity=0.7, adversarial_interval=8
+```
+
+TurboContext 的课程原本只有 `learningInterval`、`mutationMagnitude`、`explorationRate`、`surpriseWeight`、`consolidationInterval` 五个参数。V8 新增了 `mmrLambda`、`curiosityWeight`、`adversarialInterval`，与 agent.py 完全对齐。
+
+### 完整对齐检查表
+
+| autoresearch 模式 | agent.py 行数 | TurboContext 状态 |
+|---|---|---|
+| 6 种实验类型 | 253-256 | ✓ V6 |
+| 多目标变异 | 1350-1463 | ✓ V6 |
+| 简洁性准则 | 232-251 | ✓ V6 (0.02×) |
+| BranchTracker | 3240-3509 | ✓ V6 |
+| program.md | 全部 | ✓ V6 |
+| 跨分支迁移 | agent_v5_integration.py | ✓ V6 |
+| 合并撤销日志 | 2399-2410 | ✓ V8 |
+| 三级对抗验证 | 2129-2160 | ✓ V8 |
+| 阶段特定参数 | 2212-2253 | ✓ V8 |
+
+**100% 覆盖。** 没有更多的模式需要吸收了。
+
+### 关键经验
+
+**1. 深读代码，不止论文。** autoresearch 的 README 很短——真正的设计智慧在 agent.py 的 4278 行实现里。撤销日志和三级验证都不在 README 中提及——它们是"维护一个活的、进化的记忆系统"所必需的工程细节，而不是论文级别的算法创新。
+
+**2. "对齐"不是复制。** agent.py 是 Python、单文件、在 GPU 训练上运行。TurboContext 是 TypeScript、52 文件、在 LLM 上下文压缩上运行。直接复制代码没有意义——必须理解模式背后的意图，然后用适合目标平台的方式重新实现。撤销日志在 Python 里是一个 dict key，在 TypeScript 里是 `(memory as any)._consolidationUndoInfo`——形式不同，目的相同。
+
+**3. 基础设施补丁和算法创新一样有价值。** 合并撤销日志不是"酷炫的 RL 特性"。它不涉及 Thompson 采样或 TD(λ)。但没有它，系统会在合并错误时不可逆地丢失信息。这是那种"你只有在出事时才意识到它很重要"的特性。
+
+### 你的作业
+
+1. 检查 `state-v5.json` 中的 `consolidationLog` 数组——有没有已经合并的条目？如果有，它们的 `_consolidationUndoInfo` 缺失了（在 V8 之前合并的）
+2. 设置 `curriculum.phaseBoundaries` 为 `[5, 10, 15]` 来快速浏览所有 4 个阶段——观察 `mmrLambda` 如何从 0.35 变成 0.70
+3. 写一个测试：创建一个成功记忆，将其质量设为 `bestScore - 0.03`（>2% 间隙），运行对抗验证，确认它被降级

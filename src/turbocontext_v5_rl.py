@@ -109,10 +109,10 @@ def _str_to_tasktype(s: str) -> TaskType:
 @dataclass
 class CompressionWeights:
     alpha: float = 0.60
-    beta: float = 0.50
-    gamma: float = 0.50   # synced with TS constants.ts (was 0.45)
+    beta: float = 0.20
+    gamma: float = 0.20   # v8: normalized α+β+γ=1.0 (was 0.50, bug)
     theta1: float = 0.30
-    theta2: float = 0.55  # synced with TS constants.ts (was 0.60)
+    theta2: float = 0.55
 
 @dataclass
 class HERGoal:

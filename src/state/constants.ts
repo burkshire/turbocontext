@@ -105,7 +105,8 @@ export const PARAM_BOUNDS: Record<string, [number, number]> = {
 // ── Default policy ──
 /** Initial policy: moderate compression, broad exploration, small retrieval. */
 export const DEFAULT_POLICY: PolicyState = {
-  compression: { alpha: 0.60, beta: 0.50, gamma: 0.50, theta1: 0.30, theta2: 0.55 },
+  compression: { alpha: 0.60, beta: 0.20, gamma: 0.20, theta1: 0.30, theta2: 0.55 },
+  quality: { threshold: 0.75, maxAttempts: 3, dimWeights: [0.25, 0.35, 0.20, 0.20] },
   quality: { threshold: 0.75, maxAttempts: 3, dimWeights: [0.25, 0.35, 0.20, 0.20] },
   temperature: { t0: 0.70, t1: 0.35, t2: 0.10 },
   modelTiers: { lowComplexity: 1500, highComplexity: 8000 },
